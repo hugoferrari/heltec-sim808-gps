@@ -1,0 +1,21 @@
+# PlatformIO
+.pio/
+.pioenvs/
+.piolibdeps/
+
+# VS Code (configuración local / generada por PlatformIO)
+.vscode/
+!.vscode/extensions.json
+
+# Archivos temporales y del sistema
+*.tmp
+*.bak
+*.swp
+*~
+.DS_Store
+Thumbs.db
+
+# Credenciales y configuración personal (futuro GSM/GPRS/LoRaWAN)
+include/secrets.h
+*.env
+.env*
