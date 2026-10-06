@@ -27,6 +27,10 @@ La arquitectura deja separada la capa AT (`Sim808`) del GNSS (`Sim808Gps`) para 
 
 ### Diagrama de conexiones
 
+![Diagrama de conexiones Heltec WiFi LoRa 32 V2 + SIM808](DIAGRAMA.png)
+
+En el diagrama, el SIM808 (módulo mini con entrada VCC directa a VBAT) se alimenta con una celda **18650** (3.7–4.2 V) independiente del Heltec. El GND de la batería, el del SIM808 y el del Heltec quedan unidos. Cable amarillo: GPIO23 ← TXD; cable verde: GPIO17 → RXD.
+
 | Heltec WiFi LoRa 32 V2 | SIM808 | Función |
 | ---------------------- | ------ | ------- |
 | GPIO23 | TXD | UART RX del ESP32 (recibe datos del SIM808) |
