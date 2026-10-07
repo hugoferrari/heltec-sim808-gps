@@ -1,29 +1,60 @@
-# Heltec WiFi LoRa 32 V2 + SIM808 GPS + OLED
+# Medidor RSSI LoRaWAN + GPS SIM808 — Heltec WiFi LoRa 32 V2
 
-Firmware para **Heltec WiFi LoRa 32 V2 (ESP32)** que lee la posición del **GNSS integrado del SIM808** mediante comandos AT por UART y la muestra en la **OLED integrada** de la placa.
+Firmware para **Heltec WiFi LoRa 32 V2 (ESP32)** que mide la calidad del enlace **LoRaWAN** (RSSI y SNR de ida y vuelta con Node-RED) y agrega a cada uplink la **posición GNSS leída del SIM808**. Todo se muestra en la **OLED integrada**.
+
+Unifica dos proyectos:
+
+- **Medidor RSSI V2.8** (German Mizdraji, Macro Intell S.A.): esquema de prueba de red (PDR) y envío periódico de mediciones por LoRaWAN. Se conserva el esquema de transmisión.
+- **Heltec SIM808 GPS**: lectura del GNSS del SIM808 por comandos AT.
 
 ## Descripción
 
-El ESP32 se comunica con el SIM808 por una UART dedicada (UART2), independiente de la UART0 usada para programación y monitor USB. El firmware:
+1. Al arrancar, el nodo envía un **uplink confirmado (PDR)** y espera el ACK; si no llega en 75 s reintenta tras una espera aleatoria de 5–9 s.
+2. Con el PDR aprobado, envía cada **10 s** un uplink de medición (`PaqueteSalida()`).
+3. Node-RED responde a cada uplink con un downlink `tx,gateway,seq`. El nodo mide el **RSSI** y el **SNR** de ese downlink.
+4. Cada uplink lleva el RSSI/SNR de la medición anterior, el SF utilizado y la **última posición GPS** (si tiene como máximo 30 s de antigüedad).
+5. El SF de cada uplink rota SF7 → SF8 → SF9 → SF10 → SF7.
+6. En paralelo, una tarea independiente consulta el GNSS del SIM808 cada 2 s.
 
-1. Verifica que el SIM808 responde a `AT`.
-2. Enciende el GNSS (`AT+CGNSPWR=1`).
-3. Consulta periódicamente la posición (`AT+CGNSINF`, cada 2 s).
-4. Determina si hay fix, valida y extrae latitud, longitud, satélites y HDOP.
-5. Muestra el estado en la OLED y mensajes de diagnóstico por Serial.
+Solo se usan coordenadas reales del GNSS del SIM808: no hay coordenadas simuladas ni posicionamiento por red celular.
 
-Es robusto frente a la ausencia de fix (el primer fix en frío puede tardar varios minutos), a respuestas inválidas y a la pérdida de comunicación con el SIM808, que se reintenta periódicamente. Solo se usan datos reales del GNSS: no hay coordenadas simuladas ni posicionamiento por red celular.
+## Protocolo LoRaWAN
 
-La arquitectura deja separada la capa AT (`Sim808`) del GNSS (`Sim808Gps`) para poder agregar luego GSM/GPRS (reutilizando la capa AT) y LoRa/LoRaWAN (el radio SX1276 de la placa queda libre).
+| Mensaje | Formato | Ejemplo |
+| ------- | ------- | ------- |
+| Uplink (puerto 1) | `tx,rx,seq,sf,snr,lat,long` | `-115,-98,15,7,-3.25,-27.468703,-58.829450` |
+| Downlink (Node-RED) | `tx,gateway,seq` | `-115,macrointell,15` |
+
+Campos del uplink:
+
+| Campo | Significado |
+| ----- | ----------- |
+| `tx` | RSSI con el que el gateway recibió el uplink anterior (viene en el downlink) |
+| `rx` | RSSI con el que el nodo recibió ese downlink (`lora.getRssi()`) |
+| `seq` | Secuencia del downlink, devuelta a Node-RED |
+| `sf` | SF con el que salió el uplink que produjo ese `tx` |
+| `snr` | SNR del downlink en dB, dos decimales (`getPktSnrRaw() / 4`) |
+| `lat`, `long` | Última posición GPS del SIM808, grados decimales WGS84 con 6 decimales (~0.1 m, la resolución que entrega el SIM808) |
+
+Reglas para `lat`/`long`:
+
+- Se toma la última posición **con fix válido** obtenida por la tarea GPS.
+- Si esa posición tiene **más de 30 s** (`GPS_MAX_AGE_FOR_UPLINK_MS`) o nunca hubo fix, se envía `lat=0`, `long=0` (ej. `-115,-98,15,7,-3.25,0,0`).
+- Antes de la primera medición, `tx`, `rx`, `seq`, `sf` y `snr` valen 0 (igual que en V2.8).
+- El uplink confirmado del PDR usa el mismo formato.
+- Downlinks que no cumplen `-NNN,gateway,NNN` (p. ej. comandos MAC) se descartan y se registran en hexadecimal por Serial.
+
+Detección de falla (igual que V2.8): si se envían más de 3 uplinks periódicos que los downlinks recibidos, la OLED muestra `Rx:....` hasta la próxima medición válida.
 
 ## Hardware
 
 - **Heltec WiFi LoRa 32 V2** (ESP32 + SX1276 + OLED SSD1306 0.96").
+- **Antena LoRa 915 MHz** en el conector de la placa (no transmitir sin antena).
 - **Módulo SIM808** (breakout genérico, DFRobot, Adafruit FONA 808 u otro).
 - **Antena GPS** conectada al conector *GPS/GNSS* del módulo (no al de GSM). Si es activa, verificar que el módulo la alimente.
 - **Fuente para el SIM808**: 3.4–4.4 V capaz de entregar **2 A** de pico (ver [Alimentación](#alimentación)).
 - Cables y, si el módulo no tiene adaptación de niveles, un **adaptador de niveles** o divisor resistivo (ver [Niveles lógicos](#niveles-lógicos-uart)).
-- Para este firmware no hace falta SIM ni antena GSM (el GNSS funciona sin ellas).
+- No hace falta SIM ni antena GSM (el GNSS funciona sin ellas).
 
 ### Diagrama de conexiones
 
@@ -47,28 +78,31 @@ GND Heltec ─────── GND SIM808 ─────── GND fuente SIM
 
 Las líneas se cruzan: el TX de una placa va al RX de la otra. **Ambas placas deben compartir GND**; sin tierra común la UART no funciona.
 
-Estos valores se definen en `include/config.h` (`SIM808_RX_PIN`, `SIM808_TX_PIN`, `SIM808_BAUD`, `SIM808_PWRKEY_PIN`).
+Todos los pines se definen en `include/config.h`.
 
-#### Por qué GPIO23 y GPIO17
+### Mapa de GPIO del Heltec V2
 
-Pines ocupados en el Heltec WiFi LoRa 32 V2 (confirmados con el *variant* `heltec_wifi_lora_32_V2` de Arduino-ESP32 y el pinout de Heltec):
+Pines confirmados con el *variant* `heltec_wifi_lora_32_V2` de Arduino-ESP32 y el pinout de Heltec:
 
 | Uso | GPIO |
 | --- | ---- |
-| OLED (SDA, SCL, RST) | 4, 15, 16 |
-| LoRa SX1276 (SCK, MISO, MOSI, NSS, RST, DIO0, DIO1, DIO2) | 5, 19, 27, 18, 14, 26, 35, 34 |
+| LoRa SX1276: SCK, MISO, MOSI | 5, 19, 27 |
+| LoRa SX1276: NSS, RST, DIO0, DIO1, DIO2 | 18, 14, 26, 35, 34 |
+| OLED: SDA, SCL, RST | 4, 15, 16 |
+| SIM808: UART2 RX, TX | 23, 17 |
+| SIM808: PWRKEY (opcional) | 22 |
 | Vext (control de 3.3 V externo) | 21 |
 | LED blanco | 25 |
 | Botón PRG / boot | 0 |
 | UART0 USB (TX, RX) | 1, 3 |
 | Flash SPI interna | 6–11 |
 
-- **GPIO23** y **GPIO17** están expuestos en el header, no son pines de *strapping* (0, 2, 5, 12, 15), no son solo-entrada (34–39) y no los usa ningún periférico de la placa.
+- **GPIO23** y **GPIO17** están expuestos en el header, no son pines de *strapping* (0, 2, 5, 12, 15), no son solo-entrada (34–39) y no los usa ningún periférico de la placa. El bus SPI del LoRa usa MOSI=27 (no el 23 por defecto del ESP32) porque así lo define el variant de la placa.
 - No se usa el par por defecto de `Serial2` (RX=16, TX=17) porque **GPIO16 es el reset de la OLED**.
 - Se evita GPIO13 porque en algunas revisiones de la V2 se usa para medir la batería.
 - Si en el futuro se usa I2C externo, no utilizar los pines por defecto de `Wire` del variant (SDA=21, SCL=22): GPIO21 es Vext.
 
-#### PWRKEY (opcional)
+### PWRKEY (opcional)
 
 Muchos módulos SIM808 se encienden con un botón propio o tienen PWRKEY cableado para arrancar solos; en ese caso no hace falta conectarlo (`SIM808_PWRKEY_PIN = -1`, valor por defecto). Si se quiere encendido remoto:
 
@@ -79,7 +113,7 @@ Muchos módulos SIM808 se encienden con un botón propio o tienen PWRKEY cablead
 ### Alimentación
 
 - El SIM808 trabaja con **VBAT 3.4–4.4 V** (típico 4.0 V, o una celda Li-ion de 3.7 V). Muchos breakouts incluyen un regulador y aceptan 5–12 V en VIN; consultar la documentación del módulo concreto.
-- Durante las ráfagas de transmisión GSM el módem consume **picos de hasta 2 A**. Aunque este firmware solo usa GNSS, el módulo puede registrarse en la red si tiene SIM, y el soporte GSM/GPRS futuro sí transmitirá.
+- Durante las ráfagas de transmisión GSM el módem consume **picos de hasta 2 A**. Aunque este firmware solo usa GNSS, el módulo puede registrarse en la red si tiene SIM.
 - **Alimentar el SIM808 desde una fuente independiente**, capaz de 2 A, con un capacitor de bajo ESR (≥ 470–1000 µF) cerca del módulo. No alimentarlo desde el pin 3V3 del Heltec ni desde el USB del ESP32: las caídas de tensión provocan reinicios del SIM808 y/o *brownout* del ESP32.
 - **Nunca alimentar el SIM808 desde un GPIO del ESP32.**
 - Unir el GND de la fuente del SIM808 con el GND del Heltec.
@@ -103,90 +137,167 @@ Muchos módulos SIM808 se encienden con un botón propio o tienen PWRKEY cablead
 | Reset | GPIO16 |
 | Librería | [ThingPulse ESP8266 and ESP32 OLED driver for SSD1306](https://github.com/ThingPulse/esp8266-oled-ssd1306) (`SSD1306Wire`) |
 
+Pantalla principal (se refresca cada 1 s y al llegar cada downlink):
+
+```
+Tx:-115          Rx:-98      <- medición (fuente 16 px)
+SF7 SNR -3.25 #15
+macrointell                  <- gateway
+Lat: -27.468703       S:8    <- GPS con fix: satélites usados
+Lon: -58.829450     H:1.1    <-              y HDOP
+```
+
+Estados del GPS en las dos últimas líneas: `GPS: iniciando...`, `GPS: buscando fix...` + `Sat 7 vis/0 uso 34s`, o `GPS ERROR: SIM808` + detalle. Antes del primer downlink se muestra `Tx:-- Rx:--` y `Esperando downlink...`.
+
 Consideraciones del Heltec V2:
 
 - La OLED **requiere un pulso de reset en GPIO16** antes de inicializarla; sin él la pantalla queda en negro. `displayInit()` lo hace.
 - Los pines I2C de la OLED (4/15) no son los I2C por defecto del ESP32; se pasan explícitamente al constructor.
 - `displayInit()` pone **Vext (GPIO21) en LOW** (salida de 3.3 V externa activa). Es inocuo si la OLED se alimenta directamente y garantiza el funcionamiento si depende de Vext.
 - GPIO15 es pin de *strapping*; usarlo como SCL es el diseño original de Heltec y no afecta el arranque.
-- Layout: título con fuente de 16 px y 4 líneas con fuente de 10 px.
 
-## Software
-
-- **PlatformIO** (VS Code + extensión PlatformIO IDE, o PlatformIO Core CLI).
-- **Framework Arduino** sobre ESP32.
-- Plataforma fijada: `espressif32@6.9.0`, que incluye **Arduino-ESP32 2.0.17**. Fijar la versión evita cambios de comportamiento por actualizaciones automáticas.
-- Placa: `heltec_wifi_lora_32_V2`.
-- Librerías:
-  - `thingpulse/ESP8266 and ESP32 OLED driver for SSD1306 displays@^4.6.1` (OLED).
-  - `HardwareSerial` y `Wire` del core Arduino-ESP32 (UART e I2C). Para el SIM808 no se usa ninguna librería externa: la capa AT propia es pequeña y deja control total de timeouts y errores.
-
-### Estructura
+## Arquitectura
 
 ```
 heltec-sim808-gps/
-├── platformio.ini
+├── platformio.ini            # Placa, plataforma y librerías
 ├── include/
-│   ├── config.h      # Pines, baudrate, timeouts, DEBUG_AT
-│   └── log.h         # Macros de log por Serial
+│   ├── config.h              # Pines, tiempos, esquema de envío, DEBUG_LOG / DEBUG_AT
+│   ├── log.h                 # Macros LOG / LOG_AT
+│   ├── secrets.example.h     # Plantilla de credenciales ABP
+│   └── secrets.h             # Credenciales reales (NO versionado)
 ├── src/
-│   ├── main.cpp      # Máquina de estados de la aplicación
-│   ├── sim808.h/.cpp # Capa AT: envío, espera, timeout, limpieza de buffer
-│   ├── gps.h/.cpp    # GPSData, parser de +CGNSINF, control del GNSS
-│   └── display.h/.cpp# Pantallas OLED
-├── lib/
+│   ├── main.cpp              # setup() / loop()
+│   ├── app/tasks.*           # TaskScheduler: PDR, PaqueteSalida(), refresco OLED
+│   ├── lora/lora_node.*      # Radio: pines SX1276, init ABP, ISR DIO0, downlinks
+│   ├── lora/medicion.*       # Protocolo: parser del downlink, armado del uplink
+│   ├── gps/sim808.*          # Capa AT: envío, espera, timeout, limpieza de buffer
+│   ├── gps/gps.*             # GPSData, parser de +CGNSINF, encendido del GNSS
+│   ├── gps/gps_task.*        # Tarea FreeRTOS del GPS y estado compartido
+│   └── display/display.*     # Pantallas OLED
+├── lib/Beelan-LoRaWAN/       # Beelan LoRaWAN modificada "fix_classC" (ver abajo)
 └── test/
 ```
 
-## Instalación
+### Organización de tareas: TaskScheduler + una tarea FreeRTOS
 
-```bash
-git clone <url-del-repositorio>
-cd heltec-sim808-gps
-pio run                    # compilar
-pio run --target upload    # cargar el firmware por USB
-pio device monitor         # monitor serie a 115200 baud
-```
+| Ejecuta | Dónde | Mecanismo |
+| ------- | ----- | --------- |
+| `lora.update()`, downlinks | `loop()`, core 1 | Llamada en cada vuelta |
+| PDR, `PaqueteSalida()`, refresco OLED | `loop()`, core 1 | **TaskScheduler** (cooperativo) |
+| SIM808 / GNSS | Tarea `gps`, core 0 | **FreeRTOS** (`xTaskCreatePinnedToCore`) |
 
-En VS Code: abrir la carpeta del proyecto con la extensión PlatformIO instalada y usar los botones *Build*, *Upload* y *Monitor*.
+Análisis de por qué se usa esta combinación:
 
-En Windows puede ser necesario instalar el driver del puente USB-UART **CP210x** (Silicon Labs) que usa el Heltec V2.
+- **TaskScheduler sigue siendo adecuado para la lógica LoRa.** Las tareas del PDR y del envío periódico son callbacks cortos disparados por tiempo, con encadenamiento (`onDisable` de `tDecrementarEspera` lanza el intento de PDR, `tEsperarAck` habilita `tEnvio`). Esto se expresa de forma clara y sin concurrencia real, que es lo que necesita la librería Beelan: no es *thread-safe* y debe usarse siempre desde la misma tarea. Por eso se conserva TaskScheduler y el mismo esquema de tareas de V2.8.
+- **TaskScheduler no sirve para el SIM808.** Es cooperativo: si una tarea bloquea, bloquea a todas. Cada comando AT espera la respuesta del módem (hasta 2 s; la detección inicial hasta ~2.5 s), y el ciclo TX/RX de Beelan (`LORA_Cycle`) también es bloqueante: espera las ventanas RX1/RX2 (~3 s por uplink). Si ambos compartieran `loop()`, el GPS dejaría de actualizarse durante cada transmisión y los comandos AT retrasarían `lora.update()` y el procesamiento de downlinks.
+- **El GPS corre en una tarea FreeRTOS propia en el core 0.** El ESP32 tiene dos núcleos y FreeRTOS ya está disponible en Arduino-ESP32, sin librerías extra. La tarea usa la capa AT bloqueante tal cual (simple y probada), y publica su estado en una estructura protegida con una sección crítica (`portMUX`). `loop()` solo lee esa copia: nunca espera al SIM808.
+- **Recursos sin compartir.** La tarea GPS usa solo UART2; la radio (SPI) y la OLED (I2C) se usan solo desde `loop()`. El único dato compartido es el estado GPS, protegido. `Serial` es seguro entre tareas en Arduino-ESP32.
+- **Alternativas descartadas.** Hacer la capa AT asíncrona dentro de TaskScheduler complica el código (máquina de estados por comando) sin resolver el bloqueo de `LORA_Cycle`. Pasar toda la lógica LoRa a tareas FreeRTOS no aporta nada: Beelan necesita un único hilo de todos modos.
 
-## Funcionamiento
+### Tareas del scheduler
 
-```
-ESP32 inicia
-      ↓
-Inicializa OLED (reset GPIO16, I2C 4/15)
-      ↓
-Inicializa UART SIM808 (UART2, GPIO23/17, 9600 baud)
-      ↓
-Verifica SIM808 (AT, ATE0)            ── falla ─→ ERROR en OLED, reintento cada 5 s
-      ↓
-Activa GPS (AT+CGNSPWR? / AT+CGNSPWR=1) ── falla ─→ ERROR en OLED, reintento cada 5 s
-      ↓
-Espera GPS fix (AT+CGNSINF cada 2 s, muestra satélites y tiempo)
-      ↓
-Obtiene coordenadas y las valida
-      ↓
-Muestra Lat/Lon en OLED
-      ↓
-Repite (si se pierde el fix, vuelve a "Buscando fix...")
-```
+| Tarea | Intervalo | Función |
+| ----- | --------- | ------- |
+| `tDecrementarEspera` | 1 s | Cuenta regresiva; al llegar a 0 se deshabilita y su `onDisable` llama a `intentarEnvioPDR()` (uplink confirmado) |
+| `tEsperarAck` | 500 ms | Espera el ACK del PDR; con ACK habilita `tEnvio`, sin ACK en 75 s reprograma el PDR |
+| `tEnvio` | 10 s | `PaqueteSalida()`: uplink de medición no confirmado y detección de falla |
+| `tDisplay` | 1 s | Refresco de la OLED |
 
-### Máquina de estados
+### Máquina de estados del GPS (tarea `gps`)
 
 | Estado | Acción | Transiciones |
 | ------ | ------ | ------------ |
 | `INIT` | `AT` (hasta 5 intentos) y `ATE0` | OK → `GPS_START`; falla → `GPS_ERROR` |
 | `GPS_START` | Enciende y verifica el GNSS | OK → `GPS_SEARCHING`; falla → `GPS_ERROR` |
 | `GPS_SEARCHING` | `AT+CGNSINF` cada 2 s | Fix → `GPS_FIXED`; GNSS apagado → `GPS_START`; 3 fallos AT seguidos → `GPS_ERROR` |
-| `GPS_FIXED` | `AT+CGNSINF` cada 2 s, actualiza OLED | Sin fix → `GPS_SEARCHING`; mismas transiciones de error |
-| `GPS_ERROR` | Muestra el error | Tras 5 s → `INIT` |
+| `GPS_FIXED` | `AT+CGNSINF` cada 2 s | Sin fix → `GPS_SEARCHING`; mismas transiciones de error |
+| `GPS_ERROR` | Publica el error | Tras 5 s → `INIT` |
 
-No hay `delay()` largos: la temporización usa `millis()`. Las únicas esperas son las de cada comando AT, acotadas por timeout (1–2 s), y el pulso opcional de PWRKEY (1.2 s).
+### Flujo general
 
-### Comandos AT utilizados
+```
+ESP32 inicia
+      ↓
+OLED: reset GPIO16, splash (versión) ── crea tarea GPS (core 0) ──→ SIM808: AT → CGNSPWR → CGNSINF cada 2 s
+      ↓                                                                          │
+LoRa: init SX1276, ABP, Class C, SF7, CH0                                        │ publica posición
+      ↓                                                                          ↓
+PDR: uplink confirmado → espera ACK (reintenta)                        estado GPS compartido
+      ↓                                                                          │
+cada 10 s: PaqueteSalida() ── lee última posición (≤ 30 s, si no 0,0) ←─────────┘
+      ↓
+downlink "tx,gateway,seq" → mide RX y SNR → actualiza OLED
+      ↓
+Repite
+```
+
+## Librería Beelan LoRaWAN modificada (`lib/Beelan-LoRaWAN`)
+
+Es la misma librería que usaba Medidor RSSI V2.8: **Beelan LoRaWAN 2.4.0, variante `fix_classC`** (licencia MIT), copiada sin cambios en `lib/` para que el proyecto sea autocontenido. Solo se incluyen `src/`, `library.properties` y `LICENSE.txt` (se omitieron ejemplos, tests y archivos de GitHub).
+
+Diferencias con la Beelan pública que usa este firmware:
+
+| Elemento | Descripción |
+| -------- | ----------- |
+| `setTxDataRate(dr)` | Cambia solo el data rate de los uplinks (`Datarate_Tx`); la escucha (`Datarate_Rx`) no cambia. Lo usa la rotación SF7–SF10 |
+| `getPktSnrRaw()` | SNR crudo del último paquete (registro `RegPktSnrValue` del SX1276); SNR dB = valor / 4 |
+| `sendUplink()` | No fuerza Class A: el nodo sigue en Class C después de transmitir |
+| Ventanas RX | RX1 a 1 s y RX2 a 2 s del fin del uplink |
+| `Config.h` | **AU915, subbanda `SUBND_1`** (916.8–918.2 MHz) |
+
+La región y la subbanda se cambian editando `lib/Beelan-LoRaWAN/src/arduino-rfm/Config.h`. **La subbanda debe coincidir con la del gateway.**
+
+## Cambios respecto de Medidor RSSI V2.8
+
+| Tema | V2.8 | Ahora |
+| ---- | ---- | ----- |
+| Uplink | `tx,rx,seq,sf,snr` | `tx,rx,seq,sf,snr,lat,long` (también en el uplink del PDR) |
+| Entorno | Arduino IDE, `.ino` | PlatformIO, `.cpp`/`.h` por módulo |
+| Librería LoRaWAN | Instalada aparte en el Arduino IDE | Incluida en `lib/Beelan-LoRaWAN` (misma versión `fix_classC`, sin cambios) |
+| Credenciales | En `config.h`, impresas por Serial | En `include/secrets.h` (ignorado por git); solo se imprime el DevAddr |
+| DIO1 / DIO2 del SX1276 | GPIO33 / GPIO32 (cableado de la V1) | **GPIO35 / GPIO34**, cableado interno de la V2. Beelan usa DIO1 para detectar el fin de la ventana de recepción (`RFM_Single_Receive`) |
+| OLED | Adafruit SSD1306 + GFX; se bloqueaba si fallaba | ThingPulse SSD1306; si falla, el firmware sigue sin pantalla |
+| Pantalla | Solo medición | Medición + GPS; falla mostrada como `Rx:....` |
+| Logs | `DEBUG_PRINT` | `LOG("TAG", ...)` con `DEBUG_LOG`; tráfico AT con `DEBUG_AT` |
+| Variables sueltas | Globales en `Vars.h` | `struct Medicion` (comentada con los nombres anteriores) y estado del PDR encapsulado |
+| Código sin uso | Constantes de pausas largas, reintentos, `recvStatus`, `interval`, etc. | Eliminado |
+| ISR | `packetReceived` no `volatile`; interrupción antes de `lora.init()` | `volatile`; se adjunta después de inicializar la radio |
+| `EsperarAck` | El contador de timeout no se reiniciaba al recibir ACK | Se reinicia |
+
+Se conservan sin cambios: el PDR con uplink confirmado y reintentos aleatorios, `tEnvio` cada 10 s con `PaqueteSalida()`, la rotación de SF SF7–SF10 solo para TX, el formato y la validación del downlink, el cálculo de SNR, los contadores `send_count`/`rcv_count` y la detección de falla, Class C, `SF7BW125`, `CH0`, puerto 1 y ABP.
+
+El código original queda en el historial de git (commit `fb691cc`, carpeta `Medidor_RSSI_V2.8/`).
+
+## Software
+
+- **PlatformIO** (VS Code + extensión PlatformIO IDE, o PlatformIO Core CLI).
+- **Framework Arduino** sobre ESP32. Plataforma fijada: `espressif32@6.9.0` (**Arduino-ESP32 2.0.17**).
+- Placa: `heltec_wifi_lora_32_V2`.
+- Librerías:
+  - `thingpulse/ESP8266 and ESP32 OLED driver for SSD1306 displays@^4.6.1` (OLED).
+  - `arkhipenko/TaskScheduler@^3.8.5` (tareas cooperativas).
+  - Beelan LoRaWAN 2.4.0 `fix_classC` (modificada), en `lib/Beelan-LoRaWAN` (LoRaWAN ABP AU915).
+  - `HardwareSerial`, `Wire`, `SPI` y FreeRTOS del core Arduino-ESP32. Para el SIM808 no se usa librería externa.
+
+## Instalación
+
+```bash
+git clone <url-del-repositorio>
+cd heltec-sim808-gps
+cp include/secrets.example.h include/secrets.h   # completar DevAddr, NwkSKey, AppSKey
+pio run                    # compilar
+pio run --target upload    # cargar el firmware por USB
+pio device monitor         # monitor serie a 115200 baud
+```
+
+En Windows (PowerShell): `Copy-Item include\secrets.example.h include\secrets.h`.
+
+En VS Code: abrir la carpeta del proyecto con la extensión PlatformIO instalada y usar los botones *Build*, *Upload* y *Monitor*.
+
+Puede ser necesario instalar el driver del puente USB-UART **CP210x** (Silicon Labs) que usa el Heltec V2.
+
+## GPS: comandos AT
 
 | Comando | Uso |
 | ------- | --- |
@@ -209,11 +320,13 @@ Ejemplo con fix: `+CGNSINF: 1,1,20261006130512.000,-27.469812,-58.830012,62.400,
 
 Campos usados: `<run>` (1 = GNSS encendido), `<fix>` (1 = fix), `<lat>`/`<lon>` (grados decimales), `<HDOP>`, `<satsInView>` y `<satsUsed>`.
 
+Validaciones: campos numéricos completos (no vacíos ni con basura), latitud en [-90, 90], longitud en [-180, 180] y descarte de (0, 0) exacto, que en la práctica indica datos inválidos.
+
 ### Diferencias entre revisiones del SIM808
 
 - Los firmwares **R14 y posteriores** (p. ej. `1418B0xSIM808M32`) implementan la familia **`AT+CGNS*`** usada en este proyecto.
 - Firmwares más antiguos del SIM808 usan la familia **`AT+CGPS*`** (`AT+CGPSPWR`, `AT+CGPSSTATUS?`, `AT+CGPSINF`), con otro formato de respuesta (coordenadas en formato NMEA ddmm.mmmm). **Este firmware no la implementa**; con esos módulos el arranque del GPS fallará con `AT+CGNSPWR? not supported` en el monitor serie.
-- Para conocer la revisión: enviar `AT+CGMR` (desde un terminal serie o agregándolo temporalmente). Los firmwares antiguos pueden actualizarse con la herramienta de SIMCom.
+- Para conocer la revisión: enviar `AT+CGMR`. Los firmwares antiguos pueden actualizarse con la herramienta de SIMCom.
 
 ### Valores de `GPSData`
 
@@ -225,40 +338,45 @@ Campos usados: `<run>` (1 = GNSS encendido), `<fix>` (1 = fix), `<lat>`/`<lon>` 
 | `satellitesInView` | `int` | `-1` |
 | `hdop` | `float` | `NAN` |
 
-Validaciones: campos numéricos completos (no vacíos ni con basura), latitud en [-90, 90], longitud en [-180, 180] y descarte de (0, 0) exacto, que en la práctica indica datos inválidos.
-
-### Depuración
+## Depuración
 
 En `include/config.h`:
 
 ```cpp
-#define DEBUG_AT true   // false para ocultar el tráfico AT crudo
+#define DEBUG_LOG true   // Mensajes [APP], [LORA], [GPS], [SIM808], [OLED]
+#define DEBUG_AT false   // true para ver el tráfico AT crudo del SIM808
 ```
 
 Salida típica:
 
 ```
+[APP] Medidor RSSI V3.0 GPS
+[OLED] SSD1306 128x64 @0x3C SDA=GPIO4 SCL=GPIO15
 [SIM808] Initializing...
-[AT] >> AT
-[AT] << OK
 [SIM808] AT OK
-[GPS] Starting GPS...
+[LORA] Device: Nodo Medidor RSSI  DevAddr: 01fa9919
+[LORA] Sin fix GPS en los ultimos 30 s: lat=0, long=0
+[LORA] SF envio: 7
+[LORA] Uplink PDR (confirmado): 0,0,0,0,0.00,0,0
 [GPS] GNSS powered on. Searching for fix...
-[GPS] Searching for fix... (34 s, sats in view: 7, used: 0)
+[LORA] --> ACK recibido
 [GPS] FIX acquired after 52 s
-[GPS] Latitude: -27.469812
-[GPS] Longitude: -58.830012
+[GPS] Lat: -27.468703  Lon: -58.829450  Sat: 8  HDOP: 1.1
+[LORA] SF envio: 8
+[LORA] Uplink medicion: 0,0,0,0,0.00,-27.468703,-58.829450
+[LORA] Downlink OK: tx=-115 rx=-98 seq=15 sf=8 snr=-3.25 gateway=macrointell
 ```
 
 ## Cómo probar
 
-1. Cablear según la tabla, con el SIM808 alimentado por su propia fuente y GND común.
-2. Encender el SIM808 (LED de estado parpadeando) y cargar el firmware.
-3. Abrir `pio device monitor`: debe verse `[SIM808] AT OK` y `[GPS] GNSS powered on`.
-4. Colocar la antena GPS en exterior o junto a una ventana con cielo abierto.
-5. La OLED muestra `GPS / Buscando fix...` con los satélites visibles. El primer fix en frío suele tardar 30 s a varios minutos.
-6. Con fix, la OLED muestra `GPS FIX`, latitud, longitud, satélites y HDOP.
-7. Prueba de robustez: desconectar el TX/RX del SIM808 → tras 3 fallos aparece `ERROR / SIM808 / Sin respuesta AT` y se reintenta cada 5 s; al reconectar se recupera solo.
+1. Cablear según la tabla, con el SIM808 alimentado por su propia fuente y GND común. Conectar la antena LoRa.
+2. Crear `include/secrets.h` con las credenciales ABP del nodo, compilar y cargar.
+3. Abrir `pio device monitor`: debe verse `[SIM808] AT OK`, `[LORA] Uplink PDR ...` y luego `--> ACK recibido`.
+4. Sin fix todavía, los uplinks terminan en `,0,0` y la OLED muestra `GPS: buscando fix...`.
+5. Con la antena GPS a cielo abierto, al obtener fix la OLED muestra Lat/Lon y los uplinks incluyen las coordenadas.
+6. Verificar en Node-RED que el uplink llega con 7 campos y que el downlink `tx,gateway,seq` actualiza Tx/Rx en la OLED.
+7. Prueba de los 30 s: tapar la antena GPS o desconectar el SIM808. A los 30 s del último fix los uplinks vuelven a `,0,0`.
+8. Prueba de falla: apagar el gateway o Node-RED; tras 4 envíos sin respuesta la OLED muestra `Rx:....`.
 
 ## Troubleshooting
 
@@ -270,8 +388,17 @@ Salida típica:
 
 **GPS nunca obtiene fix**
 - La antena debe estar en el conector GPS/GNSS (no GSM) y con vista al cielo; dentro de edificios es muy difícil obtener fix.
-- El primer fix (arranque en frío) puede tardar varios minutos. Si `Sat visibles` permanece en 0, revisar antena y conector.
+- El primer fix (arranque en frío) puede tardar varios minutos. Si los satélites visibles permanecen en 0, revisar antena y conector.
 - Algunas antenas activas necesitan alimentación del módulo; revisar la documentación del breakout.
+
+**Los uplinks siempre envían lat=0, long=0**
+- Ver en el monitor si hay `[GPS] FIX acquired`. Sin fix, el comportamiento es el esperado.
+- Si hay fix pero se pierde seguido (`Fix lost`), mejorar la ubicación de la antena.
+
+**No llega el ACK del PDR / no llegan downlinks**
+- Verificar credenciales ABP en `include/secrets.h` y que el contador de tramas del servidor acepte el reinicio (en ABP el contador vuelve a 0 en cada arranque).
+- Verificar que la subbanda (`SUBND_1` en `lib/Beelan-LoRaWAN/src/arduino-rfm/Config.h`) coincida con la del gateway.
+- Verificar que Node-RED responda con el formato `tx,gateway,seq`; otros payloads se descartan (`Downlink ignorado, hex: ...`).
 
 **OLED no muestra información**
 - Revisar en el monitor serie si aparece `[OLED] ERROR: init failed`.
@@ -298,7 +425,5 @@ Salida típica:
 
 ## Extensiones previstas
 
-- **GSM/GPRS**: nuevo módulo que use `Sim808::sendCommand()` para `AT+CREG?`, `AT+SAPBR`/`AT+HTTP*` o `AT+CIP*`, compartiendo la UART con el GNSS.
-- **LoRa/LoRaWAN**: el SX1276 de la placa usa pines que este firmware no toca (5, 14, 18, 19, 26, 27, 34, 35).
-- **Envío de coordenadas**: `GPSData` ya contiene la última posición validada.
-- Credenciales futuras (APN, claves LoRaWAN) en `include/secrets.h`, ya excluido por `.gitignore`.
+- **GSM/GPRS**: nuevo módulo que use `Sim808::sendCommand()` (`AT+CREG?`, `AT+SAPBR`/`AT+HTTP*` o `AT+CIP*`) desde la tarea GPS, que es la dueña de la UART.
+- Credenciales adicionales (APN, etc.) en `include/secrets.h`, ya excluido por `.gitignore`.

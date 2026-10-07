@@ -4,10 +4,17 @@
 
 #include "config.h"
 
-// Mensajes de diagnóstico de alto nivel: siempre activos.
+// Mensajes de diagnóstico de alto nivel ("[TAG] mensaje").
+// Serial es seguro entre tareas en Arduino-ESP32 (cada printf toma un lock).
+#if DEBUG_LOG
 #define LOG(tag, fmt, ...) Serial.printf("[" tag "] " fmt "\n", ##__VA_ARGS__)
+#else
+#define LOG(tag, fmt, ...) \
+    do {                   \
+    } while (0)
+#endif
 
-// Tráfico AT crudo: se compila solo si DEBUG_AT es true.
+// Tráfico AT crudo del SIM808.
 #if DEBUG_AT
 #define LOG_AT(fmt, ...) Serial.printf("[AT] " fmt "\n", ##__VA_ARGS__)
 #else
