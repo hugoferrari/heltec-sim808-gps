@@ -10,7 +10,7 @@ Unifica dos proyectos:
 ## Descripción
 
 1. Al arrancar, el nodo envía un **uplink confirmado (PDR)** y espera el ACK; si no llega en 75 s reintenta tras una espera aleatoria de 5–9 s.
-2. Con el PDR aprobado, envía cada **10 s** un uplink de medición (`PaqueteSalida()`).
+2. Con el PDR aprobado, envía uplinks de medición (`PaqueteSalida()`) según el **modo** elegido con el botón PRG: al pulsar PRG (modo por defecto), automáticamente cada 10/30/60 s, o ninguno (envío apagado). Ver [Botón PRG y modos](#botón-prg-y-modos).
 3. Node-RED responde a cada uplink con un downlink `tx,gateway,seq`. El nodo mide el **RSSI** y el **SNR** de ese downlink.
 4. Cada uplink lleva el RSSI/SNR de la medición anterior, el SF utilizado y la **última posición GPS** (si tiene como máximo 30 s de antigüedad).
 5. El SF de cada uplink rota SF7 → SF8 → SF9 → SF10 → SF7.
@@ -93,7 +93,7 @@ Pines confirmados con el *variant* `heltec_wifi_lora_32_V2` de Arduino-ESP32 y e
 | SIM808: PWRKEY (opcional) | 22 |
 | Vext (control de 3.3 V externo) | 21 |
 | LED blanco | 25 |
-| Botón PRG / boot | 0 |
+| Botón PRG / boot (interfaz de modos) | 0 |
 | UART0 USB (TX, RX) | 1, 3 |
 | Flash SPI interna | 6–11 |
 
@@ -142,12 +142,14 @@ Pantalla principal (se refresca cada 1 s y al llegar cada downlink):
 ```
 Tx:-115          Rx:-98      <- medición (fuente 16 px)
 SF7 SNR -3.25 #15
-macrointell                  <- gateway
+macrointell       AUTO 10s   <- gateway y modo (PRG / AUTO 10s|30s|60s / OFF)
 Lat: -27.468703       S:8    <- GPS con fix: satélites usados
 Lon: -58.829450     H:1.1    <-              y HDOP
 ```
 
-Estados del GPS en las dos últimas líneas: `GPS: iniciando...`, `GPS: buscando fix...` + `Sat 7 vis/0 uso 34s`, o `GPS ERROR: SIM808` + detalle. Antes del primer downlink se muestra `Tx:-- Rx:--` y `Esperando downlink...`.
+Estados del GPS en las dos últimas líneas: `GPS: iniciando...`, `GPS: buscando fix...` + `Sat 7 vis/0 uso 34s`, o `GPS ERROR: SIM808` + detalle. Antes del primer downlink se muestra `Tx:-- Rx:--` y `Probando red (PDR)...` (sin ACK todavía) o `Esperando downlink...` (PDR aprobado).
+
+Las pantallas de los modos y del botón se describen en [Botón PRG y modos](#botón-prg-y-modos).
 
 Consideraciones del Heltec V2:
 
@@ -155,6 +157,67 @@ Consideraciones del Heltec V2:
 - Los pines I2C de la OLED (4/15) no son los I2C por defecto del ESP32; se pasan explícitamente al constructor.
 - `displayInit()` pone **Vext (GPIO21) en LOW** (salida de 3.3 V externa activa). Es inocuo si la OLED se alimenta directamente y garantiza el funcionamiento si depende de Vext.
 - GPIO15 es pin de *strapping*; usarlo como SCL es el diseño original de Heltec y no afecta el arranque.
+
+## Botón PRG y modos
+
+El botón **PRG** de la placa (GPIO0) controla el modo del medidor. Al arrancar se usa **Disparar con botón PRG**.
+
+| Acción | Efecto |
+| ------ | ------ |
+| Mantener PRG **5 s** | Cambia de modo: Disparo PRG → Envío automático → Envío apagado → Disparo PRG |
+| 1 pulsación (modo Disparo PRG) | Envía un uplink de medición |
+| 2 pulsaciones (modo Envío automático) | Cambia el intervalo: 10 s → 30 s → 60 s → 10 s |
+| 1 o 2 pulsaciones en otro modo | Muestra el modo actual y qué hace el botón |
+
+| Modo | Etiqueta | Comportamiento |
+| ---- | -------- | -------------- |
+| **Disparar con botón PRG** (defecto) | `PRG` | Un uplink de medición por cada pulsación. No hay envíos automáticos |
+| **Envío automático** | `AUTO 10s` | Un uplink cada 10 s (defecto), 30 s o 60 s. Al entrar al modo envía el primero de inmediato; al cambiar el intervalo, el próximo envío sale dentro del nuevo intervalo |
+| **Envío apagado** | `OFF` | No transmite nada (fin de la medición). La radio sigue escuchando, el GPS y la pantalla siguen activos |
+
+Reglas comunes:
+
+- El **PDR** (uplink confirmado con ACK) debe aprobarse antes de enviar mediciones en cualquier modo. Si se pulsa PRG antes, aparece `Sin red / Esperando ACK del PDR` y no se envía nada.
+- En **Envío apagado** el PDR pendiente se pausa; al salir del modo se retoma con un intento inmediato. Si ya estaba aprobado, no se repite.
+- Al cambiar de modo se reinician los contadores de detección de falla (`send_count`/`rcv_count`) y se borra la marca `Rx:....`.
+- El intervalo elegido se conserva al cambiar de modo. El modo y el intervalo vuelven a los valores por defecto al reiniciar.
+
+### Pantallas
+
+| Situación | Pantalla |
+| --------- | -------- |
+| Mantener PRG más de 0.8 s | `Cambiar modo`, el modo siguiente y una barra de progreso hasta los 5 s. Soltando antes, no cambia nada |
+| Modo nuevo (o 1/2 pulsaciones fuera de su modo) | Nombre del modo y ayuda, por ejemplo `Envio auto / Cada 10 s / 2 clics: intervalo / Mantener PRG 5s: modo` |
+| Intervalo nuevo | `Envio auto / Intervalo: 30 s` |
+| Disparo con PRG | `Uplink / Enviando medicion...` |
+| Disparo sin PDR aprobado | `Sin red / Esperando ACK del PDR` |
+
+Los avisos duran 2.5 s (`UI_OVERLAY_MS`) y luego vuelve la pantalla principal.
+
+### Capa de abstracción del botón (`src/hal/button.*`)
+
+La clase `Button` convierte el pin en eventos `SinglePress`, `DoublePress` y `LongPress`:
+
+- Una **tarea FreeRTOS** propia lee el pin cada 10 ms y deja los eventos en una **cola**. `loop()` los consume con `getEvent()`. Así no se pierden pulsaciones mientras `loop()` está bloqueado por las ventanas RX de un uplink (~3 s).
+- **Antirrebote**: un cambio se acepta cuando el pin se mantiene estable 30 ms.
+- **Pulsación simple**: se suelta antes de 0.8 s y no llega una segunda dentro de 400 ms. Por eso tiene una demora de ~0.4 s.
+- **Doble pulsación**: dos pulsaciones cortas con menos de 400 ms entre ellas.
+- **Pulsación larga**: se emite al cumplirse 5 s **sin esperar a soltar**. Una pulsación de entre 0.8 s y 5 s se descarta, lo que permite arrepentirse de un cambio de modo.
+- `holdMs()` informa cuánto lleva presionado durante una pulsación larga en curso (la usa la barra de progreso).
+- Si el botón está presionado al arrancar, esa pulsación se ignora hasta soltarlo.
+
+Todos los tiempos están en `include/config.h`:
+
+| Constante | Valor | Uso |
+| --------- | ----- | --- |
+| `BUTTON_LONG_PRESS_MS` | 5000 | Mantener para cambiar de modo |
+| `BUTTON_DOUBLE_PRESS_GAP_MS` | 400 | Espera máxima de la segunda pulsación |
+| `BUTTON_CLICK_MAX_MS` | 800 | Duración máxima de un clic; también inicio de la barra de progreso |
+| `BUTTON_DEBOUNCE_MS` | 30 | Antirrebote |
+| `BUTTON_POLL_MS` | 10 | Período de lectura |
+| `ENVIO_INTERVALOS_MS` | {10000, 30000, 60000} | Intervalos del envío automático (el primero es el defecto) |
+
+GPIO0 es pin de *strapping*: **no mantener PRG presionado al encender o resetear**, porque el ESP32 entra en modo descarga de firmware.
 
 ## Arquitectura
 
@@ -168,41 +231,47 @@ heltec-sim808-gps/
 │   └── secrets.h             # Credenciales reales (NO versionado)
 ├── src/
 │   ├── main.cpp              # setup() / loop()
-│   ├── app/tasks.*           # TaskScheduler: PDR, PaqueteSalida(), refresco OLED
+│   ├── app/tasks.*           # TaskScheduler: PDR, PaqueteSalida(), control por modo
+│   ├── app/modes.*           # Modos del medidor y respuesta a los eventos de PRG
+│   ├── hal/button.*          # HAL del botón: simple / doble / mantenido (tarea + cola)
+│   ├── ui/ui.*               # Qué pantalla mostrar: principal, avisos, progreso
 │   ├── lora/lora_node.*      # Radio: pines SX1276, init ABP, ISR DIO0, downlinks
 │   ├── lora/medicion.*       # Protocolo: parser del downlink, armado del uplink
 │   ├── gps/sim808.*          # Capa AT: envío, espera, timeout, limpieza de buffer
 │   ├── gps/gps.*             # GPSData, parser de +CGNSINF, encendido del GNSS
 │   ├── gps/gps_task.*        # Tarea FreeRTOS del GPS y estado compartido
-│   └── display/display.*     # Pantallas OLED
+│   └── display/display.*     # Dibujo de las pantallas OLED
 ├── lib/Beelan-LoRaWAN/       # Beelan LoRaWAN modificada "fix_classC" (ver abajo)
 └── test/
 ```
 
-### Organización de tareas: TaskScheduler + una tarea FreeRTOS
+### Organización de tareas: TaskScheduler + tareas FreeRTOS
 
 | Ejecuta | Dónde | Mecanismo |
 | ------- | ----- | --------- |
-| `lora.update()`, downlinks | `loop()`, core 1 | Llamada en cada vuelta |
-| PDR, `PaqueteSalida()`, refresco OLED | `loop()`, core 1 | **TaskScheduler** (cooperativo) |
+| `lora.update()`, downlinks, eventos del botón, OLED | `loop()`, core 1 | Llamada en cada vuelta |
+| PDR, `PaqueteSalida()` | `loop()`, core 1 | **TaskScheduler** (cooperativo) |
 | SIM808 / GNSS | Tarea `gps`, core 0 | **FreeRTOS** (`xTaskCreatePinnedToCore`) |
+| Lectura del botón PRG | Tarea `button`, prioridad 2 | **FreeRTOS** + cola de eventos |
 
 Análisis de por qué se usa esta combinación:
 
 - **TaskScheduler sigue siendo adecuado para la lógica LoRa.** Las tareas del PDR y del envío periódico son callbacks cortos disparados por tiempo, con encadenamiento (`onDisable` de `tDecrementarEspera` lanza el intento de PDR, `tEsperarAck` habilita `tEnvio`). Esto se expresa de forma clara y sin concurrencia real, que es lo que necesita la librería Beelan: no es *thread-safe* y debe usarse siempre desde la misma tarea. Por eso se conserva TaskScheduler y el mismo esquema de tareas de V2.8.
 - **TaskScheduler no sirve para el SIM808.** Es cooperativo: si una tarea bloquea, bloquea a todas. Cada comando AT espera la respuesta del módem (hasta 2 s; la detección inicial hasta ~2.5 s), y el ciclo TX/RX de Beelan (`LORA_Cycle`) también es bloqueante: espera las ventanas RX1/RX2 (~3 s por uplink). Si ambos compartieran `loop()`, el GPS dejaría de actualizarse durante cada transmisión y los comandos AT retrasarían `lora.update()` y el procesamiento de downlinks.
 - **El GPS corre en una tarea FreeRTOS propia en el core 0.** El ESP32 tiene dos núcleos y FreeRTOS ya está disponible en Arduino-ESP32, sin librerías extra. La tarea usa la capa AT bloqueante tal cual (simple y probada), y publica su estado en una estructura protegida con una sección crítica (`portMUX`). `loop()` solo lee esa copia: nunca espera al SIM808.
-- **Recursos sin compartir.** La tarea GPS usa solo UART2; la radio (SPI) y la OLED (I2C) se usan solo desde `loop()`. El único dato compartido es el estado GPS, protegido. `Serial` es seguro entre tareas en Arduino-ESP32.
+- **El botón también tiene su tarea.** Por el mismo bloqueo de `LORA_Cycle`, leerlo desde `loop()` perdería pulsaciones y mediría mal la pulsación larga. La tarea `button` solo lee GPIO0 y envía eventos por una cola de FreeRTOS. Las acciones (cambiar modo, transmitir) se ejecutan en `loop()`, que es el único que toca la radio.
+- **Recursos sin compartir.** La tarea GPS usa solo UART2 y la del botón solo GPIO0; la radio (SPI) y la OLED (I2C) se usan solo desde `loop()`. Lo compartido es el estado GPS (protegido) y la cola de eventos del botón. `Serial` es seguro entre tareas en Arduino-ESP32.
 - **Alternativas descartadas.** Hacer la capa AT asíncrona dentro de TaskScheduler complica el código (máquina de estados por comando) sin resolver el bloqueo de `LORA_Cycle`. Pasar toda la lógica LoRa a tareas FreeRTOS no aporta nada: Beelan necesita un único hilo de todos modos.
 
 ### Tareas del scheduler
 
 | Tarea | Intervalo | Función |
 | ----- | --------- | ------- |
-| `tDecrementarEspera` | 1 s | Cuenta regresiva; al llegar a 0 se deshabilita y su `onDisable` llama a `intentarEnvioPDR()` (uplink confirmado) |
-| `tEsperarAck` | 500 ms | Espera el ACK del PDR; con ACK habilita `tEnvio`, sin ACK en 75 s reprograma el PDR |
-| `tEnvio` | 10 s | `PaqueteSalida()`: uplink de medición no confirmado y detección de falla |
-| `tDisplay` | 1 s | Refresco de la OLED |
+| `tDecrementarEspera` | 1 s | Cuenta regresiva; al llegar a 0 se deshabilita y su `onDisable` llama a `intentarEnvioPDR()` (uplink confirmado). Se pausa en modo apagado |
+| `tEsperarAck` | 500 ms | Espera el ACK del PDR; con ACK habilita `tEnvio` si el modo es automático, sin ACK en 75 s reprograma el PDR |
+| `tEnvio` | 10/30/60 s | `PaqueteSalida()` en modo Envío automático: uplink de medición no confirmado y detección de falla |
+
+En modo Disparo PRG, `PaqueteSalida()` se llama desde `tasksDispararUplink()` al pulsar PRG. `tasksAplicarModo()` habilita o deshabilita estas tareas según el modo. El refresco de la OLED lo hace `ui/ui.cpp` con `millis()`: cada 1 s, o cada 100 ms mientras se muestra la barra de progreso.
 
 ### Máquina de estados del GPS (tarea `gps`)
 
@@ -225,7 +294,8 @@ LoRa: init SX1276, ABP, Class C, SF7, CH0                                       
       ↓                                                                          ↓
 PDR: uplink confirmado → espera ACK (reintenta)                        estado GPS compartido
       ↓                                                                          │
-cada 10 s: PaqueteSalida() ── lee última posición (≤ 30 s, si no 0,0) ←─────────┘
+PaqueteSalida() ── lee última posición (≤ 30 s, si no 0,0) ←─────────────────────┘
+  (modo PRG: al pulsar · modo AUTO: cada 10/30/60 s · modo OFF: nunca)
       ↓
 downlink "tx,gateway,seq" → mide RX y SNR → actualiza OLED
       ↓
@@ -265,7 +335,9 @@ La región y la subbanda se cambian editando `lib/Beelan-LoRaWAN/src/arduino-rfm
 | ISR | `packetReceived` no `volatile`; interrupción antes de `lora.init()` | `volatile`; se adjunta después de inicializar la radio |
 | `EsperarAck` | El contador de timeout no se reiniciaba al recibir ACK | Se reinicia |
 
-Se conservan sin cambios: el PDR con uplink confirmado y reintentos aleatorios, `tEnvio` cada 10 s con `PaqueteSalida()`, la rotación de SF SF7–SF10 solo para TX, el formato y la validación del downlink, el cálculo de SNR, los contadores `send_count`/`rcv_count` y la detección de falla, Class C, `SF7BW125`, `CH0`, puerto 1 y ABP.
+| Envío de mediciones | Automático cada 10 s | Según el modo elegido con PRG: disparo manual (defecto), automático 10/30/60 s o apagado |
+
+Se conservan sin cambios: el PDR con uplink confirmado y reintentos aleatorios, `PaqueteSalida()` (en modo automático, `tEnvio` con 10 s por defecto), la rotación de SF SF7–SF10 solo para TX, el formato y la validación del downlink, el cálculo de SNR, los contadores `send_count`/`rcv_count` y la detección de falla, Class C, `SF7BW125`, `CH0`, puerto 1 y ABP.
 
 El código original queda en el historial de git (commit `fb691cc`, carpeta `Medidor_RSSI_V2.8/`).
 
@@ -343,18 +415,20 @@ Validaciones: campos numéricos completos (no vacíos ni con basura), latitud en
 En `include/config.h`:
 
 ```cpp
-#define DEBUG_LOG true   // Mensajes [APP], [LORA], [GPS], [SIM808], [OLED]
+#define DEBUG_LOG true   // Mensajes [APP], [MODO], [BTN], [LORA], [GPS], [SIM808], [OLED]
 #define DEBUG_AT false   // true para ver el tráfico AT crudo del SIM808
 ```
 
 Salida típica:
 
 ```
-[APP] Medidor RSSI V3.0 GPS
+[APP] Medidor RSSI V3.1 GPS
 [OLED] SSD1306 128x64 @0x3C SDA=GPIO4 SCL=GPIO15
 [SIM808] Initializing...
 [SIM808] AT OK
 [LORA] Device: Nodo Medidor RSSI  DevAddr: 01fa9919
+[MODO] Modo: Disparar con boton PRG
+[BTN] Button on GPIO0 ready
 [LORA] Sin fix GPS en los ultimos 30 s: lat=0, long=0
 [LORA] SF envio: 7
 [LORA] Uplink PDR (confirmado): 0,0,0,0,0.00,0,0
@@ -362,9 +436,14 @@ Salida típica:
 [LORA] --> ACK recibido
 [GPS] FIX acquired after 52 s
 [GPS] Lat: -27.468703  Lon: -58.829450  Sat: 8  HDOP: 1.1
+[BTN] SINGLE
 [LORA] SF envio: 8
 [LORA] Uplink medicion: 0,0,0,0,0.00,-27.468703,-58.829450
 [LORA] Downlink OK: tx=-115 rx=-98 seq=15 sf=8 snr=-3.25 gateway=macrointell
+[BTN] LONG
+[MODO] Modo: Envio automatico
+[BTN] DOUBLE
+[MODO] Intervalo de envio: 30 s
 ```
 
 ## Cómo probar
@@ -376,7 +455,14 @@ Salida típica:
 5. Con la antena GPS a cielo abierto, al obtener fix la OLED muestra Lat/Lon y los uplinks incluyen las coordenadas.
 6. Verificar en Node-RED que el uplink llega con 7 campos y que el downlink `tx,gateway,seq` actualiza Tx/Rx en la OLED.
 7. Prueba de los 30 s: tapar la antena GPS o desconectar el SIM808. A los 30 s del último fix los uplinks vuelven a `,0,0`.
-8. Prueba de falla: apagar el gateway o Node-RED; tras 4 envíos sin respuesta la OLED muestra `Rx:....`.
+8. Prueba de falla: en modo automático, apagar el gateway o Node-RED; tras 4 envíos sin respuesta la OLED muestra `Rx:....`.
+9. Botón PRG:
+   - Al arrancar la etiqueta es `PRG`. Tras el ACK del PDR, una pulsación muestra `Uplink / Enviando medicion...` y en el monitor aparece `[LORA] Uplink medicion: ...`.
+   - Mantener PRG: a los 0.8 s aparece la barra de progreso y a los 5 s el aviso `Envio auto`. La etiqueta pasa a `AUTO 10s` y sale un uplink inmediato, luego uno cada 10 s.
+   - Dos pulsaciones: `Intervalo: 30 s`, luego `60 s` y de nuevo `10 s`. Verificar el período entre uplinks en el monitor.
+   - Mantener 5 s: `Envio apagado`, etiqueta `OFF`; no deben salir más uplinks.
+   - Mantener 5 s otra vez: vuelve a `Disparo PRG`.
+   - Mantener 2 s y soltar: la barra desaparece y el modo no cambia.
 
 ## Troubleshooting
 
@@ -422,6 +508,13 @@ Salida típica:
 **Problemas de niveles lógicos UART**
 - El SIM808 trabaja a 2.8 V. Si el breakout no adapta niveles, colocar adaptador o divisor en la línea ESP32 TX → SIM808 RXD.
 - No conectar módulos con UART a 5 V directamente al ESP32: los GPIO del ESP32 no toleran 5 V.
+
+**El botón PRG no hace nada o no transmite**
+- Ver en el monitor si aparecen `[BTN] SINGLE/DOUBLE/LONG`. Si no aparecen, revisar que nada externo esté conectado a GPIO0.
+- Una pulsación en modo `AUTO` u `OFF` solo muestra el modo; para disparar uplinks hay que estar en `PRG`.
+- `Sin red / Esperando ACK del PDR`: el PDR todavía no recibió ACK (ver troubleshooting de LoRa).
+- Una pulsación de más de 0.8 s y menos de 5 s se descarta a propósito.
+- Si la placa no arranca y queda en modo descarga, se mantuvo PRG al encender: soltarlo y resetear.
 
 ## Extensiones previstas
 

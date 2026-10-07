@@ -2,21 +2,34 @@
 //
 // Mide el enlace LoRaWAN (RSSI/SNR de ida y vuelta con Node-RED) y agrega al
 // uplink la posición GNSS leída del SIM808. Muestra todo en la OLED integrada.
+// El botón PRG elige el modo: disparo manual, envío automático o apagado.
 //
 // Basado en Medidor RSSI V2.8 (German Mizdraji, Macro Intell S.A.).
 //
 // Organización:
-//   core 1 - loop():   radio LoRaWAN + TaskScheduler (PDR, envíos, OLED)
-//   core 0 - tarea GPS: SIM808 por UART2 (comandos AT bloqueantes)
+//   core 1 - loop():       radio LoRaWAN, TaskScheduler (PDR, envíos), modos, OLED
+//   core 1 - tarea button: lectura del botón PRG (eventos por cola)
+//   core 0 - tarea GPS:    SIM808 por UART2 (comandos AT bloqueantes)
 
 #include <Arduino.h>
 
+#include "app/modes.h"
 #include "app/tasks.h"
 #include "config.h"
 #include "display/display.h"
 #include "gps/gps_task.h"
+#include "hal/button.h"
 #include "log.h"
 #include "lora/lora_node.h"
+#include "ui/ui.h"
+
+namespace {
+
+Button prgButton(BUTTON_PRG_PIN, true,
+                 ButtonTiming{BUTTON_POLL_MS, BUTTON_DEBOUNCE_MS, BUTTON_CLICK_MAX_MS,
+                              BUTTON_DOUBLE_PRESS_GAP_MS, BUTTON_LONG_PRESS_MS});
+
+}  // namespace
 
 void setup() {
     Serial.begin(DEBUG_SERIAL_BAUD);
@@ -34,12 +47,20 @@ void setup() {
         LOG("APP", "Continuing without LoRa radio");
     }
     tasksInit();
-    displayRefresh();
+    modesInit();
+    prgButton.begin();
+    uiInit(prgButton);
 }
 
 void loop() {
     tasksExecute();
     if (loraProcess()) {
-        displayRefresh();
+        uiRefreshNow();
     }
+
+    ButtonEvent event;
+    while (prgButton.getEvent(event)) {
+        modesHandleEvent(event);
+    }
+    uiUpdate();
 }
