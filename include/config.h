@@ -8,7 +8,7 @@
 
 #include <Arduino.h>
 
-#define FW_VERSION "Medidor RSSI V3.1 GPS"
+#define FW_VERSION "Medidor RSSI GPS V3.1.1"
 
 // -----------------------------------------------------------------------------
 // Depuración por Serial (USB, UART0)
