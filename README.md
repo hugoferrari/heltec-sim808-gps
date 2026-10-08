@@ -543,3 +543,12 @@ Salida típica:
 
 - **GSM/GPRS**: nuevo módulo que use `Sim808::sendCommand()` (`AT+CREG?`, `AT+SAPBR`/`AT+HTTP*` o `AT+CIP*`) desde la tarea GPS, que es la dueña de la UART.
 - Credenciales adicionales (APN, etc.) en `include/secrets.h`, ya excluido por `.gitignore`.
+
+---
+
+## Autor y contacto
+
+**Contacto técnico:**
+- 📧 **Email:** dariohugoferrari@gmail.com
+- 🐭 **Responsable:** Ing. Hugo Ferrari
+- 🏢 **Empresa:** Macro Intell
