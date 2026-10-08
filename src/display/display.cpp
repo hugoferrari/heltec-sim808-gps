@@ -4,6 +4,7 @@
 #include <Wire.h>
 
 #include "config.h"
+#include "images.h"
 #include "log.h"
 
 namespace {
@@ -127,6 +128,31 @@ bool displayInit() {
     LOG("OLED", "SSD1306 128x64 @0x%02X SDA=GPIO%d SCL=GPIO%d", OLED_I2C_ADDR, OLED_SDA_PIN,
         OLED_SCL_PIN);
     return true;
+}
+
+void displayDrawMonoImage(int16_t x, int16_t y, const MonoImage &image, bool invert) {
+    if (!oledOk || !image.bits) return;
+    // drawXbm() de ThingPulse usa el mismo orden de bits que MONO (LSB = pixel izquierdo).
+    if (invert) {
+        oled.setColor(WHITE);
+        oled.fillRect(x, y, image.width, image.height);
+        oled.setColor(BLACK);
+    }
+    oled.drawXbm(x, y, image.width, image.height, image.bits);
+    oled.setColor(WHITE);
+}
+
+void displayMonoImage(const MonoImage &image, bool invert) {
+    if (!oledOk) return;
+    oled.clear();
+    const int16_t x = (oled.getWidth() - image.width) / 2;
+    const int16_t y = (oled.getHeight() - image.height) / 2;
+    displayDrawMonoImage(x, y, image, invert);
+    oled.display();
+}
+
+void displayLogo() {
+    displayMonoImage(MonoImage{Logo_width, Logo_height, Logo_bits});
 }
 
 void displayStartup() {
