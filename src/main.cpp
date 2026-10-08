@@ -38,9 +38,11 @@ void setup() {
     if (!displayInit()) {
         LOG("APP", "Continuing without OLED");
     }
-    displayStartup();
+    displayLogo();
 
-    gpsTaskStart();  // El GPS empieza a buscar fix mientras se muestra el splash
+    gpsTaskStart();  // El GPS empieza a buscar fix mientras se muestran las pantallas de inicio
+    delay(SPLASH_LOGO_MS);
+    displayStartup();
     delay(SPLASH_DURATION_MS);
 
     if (!loraInit()) {

@@ -137,7 +137,29 @@ Muchos módulos SIM808 se encienden con un botón propio o tienen PWRKEY cablead
 | Reset | GPIO16 |
 | Librería | [ThingPulse ESP8266 and ESP32 OLED driver for SSD1306](https://github.com/ThingPulse/esp8266-oled-ssd1306) (`SSD1306Wire`) |
 
-Pantalla principal (se refresca cada 1 s y al llegar cada downlink):
+### Pantalla de bienvenida e imágenes MONO
+
+Al encender se muestra el **logo de Macro Intell** (`Logo_bits` en `include/images.h`, 128×64) durante 2.5 s (`SPLASH_LOGO_MS`), luego la versión del firmware durante 1.5 s (`SPLASH_DURATION_MS`). El GPS ya empieza a buscar fix durante ese tiempo.
+
+Las imágenes se generan con la herramienta **MONO** de [online-utility.org](https://www.online-utility.org/image/convert/to/MONO) a partir de un mapa de bits monocromático. Formato de los bytes:
+
+- Filas de arriba hacia abajo; cada fila ocupa `ceil(ancho / 8)` bytes.
+- En cada byte, el **bit menos significativo es el pixel de más a la izquierda**.
+- Bit en 1 = pixel encendido.
+
+Es el mismo orden que el formato XBM, así que se dibuja con `drawXbm()` de la librería ThingPulse (la misma de la OLED, sin librerías extra). Funciones en `src/display/display.h`:
+
+| Función | Uso |
+| ------- | --- |
+| `displayMonoImage(img, invert)` | Borra la pantalla y muestra la imagen centrada |
+| `displayDrawMonoImage(x, y, img, invert)` | Dibuja la imagen en el buffer sin borrar ni actualizar (para combinarla con texto) |
+| `displayLogo()` | Pantalla de bienvenida con `Logo_bits` |
+
+`MonoImage` agrupa `width`, `height` y `bits`. Con `invert = true` se encienden los bits en 0 (útil si la imagen se generó con fondo negro). Para agregar otra imagen: generar el arreglo MONO, pegarlo en `include/images.h` con sus `#define _width/_height`, y llamar a `displayMonoImage(MonoImage{X_width, X_height, X_bits})`.
+
+### Pantalla principal
+
+Se refresca cada 1 s y al llegar cada downlink:
 
 ```
 Tx:-115          Rx:-98      <- medición (fuente 16 px)
@@ -227,6 +249,7 @@ heltec-sim808-gps/
 ├── include/
 │   ├── config.h              # Pines, tiempos, esquema de envío, DEBUG_LOG / DEBUG_AT
 │   ├── log.h                 # Macros LOG / LOG_AT
+│   ├── images.h              # Imágenes MONO (logo de bienvenida)
 │   ├── secrets.example.h     # Plantilla de credenciales ABP
 │   └── secrets.h             # Credenciales reales (NO versionado)
 ├── src/
@@ -288,7 +311,7 @@ En modo Disparo PRG, `PaqueteSalida()` se llama desde `tasksDispararUplink()` al
 ```
 ESP32 inicia
       ↓
-OLED: reset GPIO16, splash (versión) ── crea tarea GPS (core 0) ──→ SIM808: AT → CGNSPWR → CGNSINF cada 2 s
+OLED: reset GPIO16, logo + versión ──── crea tarea GPS (core 0) ──→ SIM808: AT → CGNSPWR → CGNSINF cada 2 s
       ↓                                                                          │
 LoRa: init SX1276, ABP, Class C, SF7, CH0                                        │ publica posición
       ↓                                                                          ↓

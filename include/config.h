@@ -78,7 +78,8 @@ constexpr int VEXT_CTRL_PIN = 21;  // Vext: LOW = alimentación externa 3.3 V ac
 constexpr uint32_t DISPLAY_REFRESH_MS = 1000;      // Pantalla principal
 constexpr uint32_t DISPLAY_FAST_REFRESH_MS = 100;  // Barra de progreso al mantener PRG
 constexpr uint32_t UI_OVERLAY_MS = 2500;           // Avisos (modo, intervalo, envío)
-constexpr uint32_t SPLASH_DURATION_MS = 2000;
+constexpr uint32_t SPLASH_LOGO_MS = 2500;      // Pantalla de bienvenida con el logo
+constexpr uint32_t SPLASH_DURATION_MS = 1500;  // Pantalla con la versión del firmware
 
 // -----------------------------------------------------------------------------
 // Botón PRG (GPIO0, activo en bajo)

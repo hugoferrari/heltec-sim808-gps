@@ -14,8 +14,24 @@
 //   Lat: -27.468703      S:8    <- GPS (o estado: buscando / error)
 //   Lon: -58.829450    H:1.1
 
+// Imagen monocromática en formato MONO/XBM (ver include/images.h).
+struct MonoImage {
+    int16_t width;
+    int16_t height;
+    const uint8_t *bits;
+};
+
 bool displayInit();
-void displayStartup();
+
+// Dibuja una imagen MONO en el buffer, sin borrar ni actualizar la pantalla
+// (permite componer con texto). `invert`: pinta los bits en 0 en lugar de los 1.
+void displayDrawMonoImage(int16_t x, int16_t y, const MonoImage &image, bool invert = false);
+
+// Borra la pantalla y muestra la imagen centrada.
+void displayMonoImage(const MonoImage &image, bool invert = false);
+
+void displayLogo();     // Pantalla de bienvenida: logo de include/images.h
+void displayStartup();  // Versión del firmware
 
 // `modoTag`: modo abreviado ("PRG", "AUTO 10s", "OFF").
 // `pdrOk`: false muestra "Probando red (PDR)..." hasta el primer downlink.
