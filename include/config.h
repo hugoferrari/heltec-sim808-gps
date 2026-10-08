@@ -8,7 +8,7 @@
 
 #include <Arduino.h>
 
-#define FW_VERSION "Medidor RSSI V3.0 GPS"
+#define FW_VERSION "Medidor RSSI V3.1 GPS"
 
 // -----------------------------------------------------------------------------
 // Depuración por Serial (USB, UART0)
@@ -35,12 +35,15 @@ constexpr int LORA_DIO2_PIN = 34;  // Cableado internamente en la V2
 // Esquema de medición / transmisión LoRaWAN
 // -----------------------------------------------------------------------------
 constexpr uint8_t LORA_PORT = 1;
-constexpr uint32_t ENVIO_INTERVAL_MS = 10000;   // Período de PaqueteSalida()
 constexpr uint32_t ACK_POLL_INTERVAL_MS = 500;  // Consulta de ACK del PDR
 constexpr uint16_t ACK_TIMEOUT_TICKS = 150;     // 150 x 500 ms = 75 s sin ACK
 constexpr long PDR_RETRY_MIN_S = 5;             // Espera aleatoria entre
 constexpr long PDR_RETRY_MAX_S = 10;            // reintentos del PDR (s)
 constexpr uint8_t MAX_DIFERENCIA_ENVIOS = 3;    // Envíos sin respuesta -> falla
+
+// Intervalos del modo "Envío automático", en el orden en que se recorren con
+// doble pulsación de PRG. El primero es el valor por defecto.
+constexpr uint32_t ENVIO_INTERVALOS_MS[] = {10000, 30000, 60000};
 
 // Antigüedad máxima de una posición GPS para incluirla en el uplink.
 // Si no hay fix más reciente se envía lat=0, long=0.
@@ -72,8 +75,24 @@ constexpr int OLED_SCL_PIN = 15;
 constexpr int OLED_RST_PIN = 16;
 constexpr int VEXT_CTRL_PIN = 21;  // Vext: LOW = alimentación externa 3.3 V activa
 
-constexpr uint32_t DISPLAY_REFRESH_MS = 1000;
+constexpr uint32_t DISPLAY_REFRESH_MS = 1000;      // Pantalla principal
+constexpr uint32_t DISPLAY_FAST_REFRESH_MS = 100;  // Barra de progreso al mantener PRG
+constexpr uint32_t UI_OVERLAY_MS = 2500;           // Avisos (modo, intervalo, envío)
 constexpr uint32_t SPLASH_DURATION_MS = 2000;
+
+// -----------------------------------------------------------------------------
+// Botón PRG (GPIO0, activo en bajo)
+// GPIO0 es pin de strapping: si se mantiene PRG al resetear, el ESP32 entra en
+// modo descarga. En funcionamiento normal se puede leer sin problemas.
+// -----------------------------------------------------------------------------
+constexpr int BUTTON_PRG_PIN = 0;
+constexpr uint32_t BUTTON_POLL_MS = 10;
+constexpr uint32_t BUTTON_DEBOUNCE_MS = 30;
+// Una pulsación más larga que esto (y más corta que la larga) se descarta:
+// permite arrepentirse de un cambio de modo soltando antes de tiempo.
+constexpr uint32_t BUTTON_CLICK_MAX_MS = 800;
+constexpr uint32_t BUTTON_DOUBLE_PRESS_GAP_MS = 400;  // Espera de la 2ª pulsación
+constexpr uint32_t BUTTON_LONG_PRESS_MS = 5000;       // Mantener para cambiar de modo
 
 // -----------------------------------------------------------------------------
 // Tarea GPS (FreeRTOS) y tiempos AT (ms)

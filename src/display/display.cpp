@@ -16,7 +16,7 @@ constexpr int16_t ROW_MED_Y = 0;
 constexpr int16_t ROW_Y[] = {17, 29, 41, 52};
 constexpr int16_t RIGHT_X = 127;
 
-void drawMedicion(const Medicion &med) {
+void drawMedicion(const Medicion &med, const char *modoTag, bool pdrOk) {
     char buf[32];
     oled.setFont(ArialMT_Plain_16);
 
@@ -39,9 +39,12 @@ void drawMedicion(const Medicion &med) {
     oled.drawString(RIGHT_X, ROW_MED_Y, buf);
 
     oled.setFont(ArialMT_Plain_10);
+    oled.setTextAlignment(TEXT_ALIGN_RIGHT);
+    oled.drawString(RIGHT_X, ROW_Y[1], modoTag);
+
     oled.setTextAlignment(TEXT_ALIGN_LEFT);
     if (!med.recibida) {
-        oled.drawString(0, ROW_Y[0], "Esperando downlink...");
+        oled.drawString(0, ROW_Y[0], pdrOk ? "Esperando downlink..." : "Probando red (PDR)...");
         return;
     }
     char snrTxt[8];
@@ -136,14 +139,38 @@ void displayStartup() {
     oled.display();
 }
 
-void displayMain(const Medicion &med, const GpsStatus &gps) {
+void displayMain(const Medicion &med, const GpsStatus &gps, const char *modoTag, bool pdrOk) {
     if (!oledOk) return;
     oled.clear();
-    drawMedicion(med);
+    drawMedicion(med, modoTag, pdrOk);
     drawGps(gps);
     oled.display();
 }
 
-void displayRefresh() {
-    displayMain(medicion, gpsGetStatus());
+void displayInfo(const char *title, const char *line1, const char *line2, const char *line3) {
+    if (!oledOk) return;
+    oled.clear();
+    oled.setTextAlignment(TEXT_ALIGN_LEFT);
+    oled.setFont(ArialMT_Plain_16);
+    oled.drawString(0, ROW_MED_Y, title);
+    oled.drawHorizontalLine(0, 18, 128);
+    oled.setFont(ArialMT_Plain_10);
+    oled.drawString(0, 22, line1);
+    oled.drawString(0, 35, line2);
+    oled.drawString(0, 48, line3);
+    oled.display();
+}
+
+void displayHoldProgress(float fraction, const char *nextMode) {
+    if (!oledOk) return;
+    const float clamped = fraction < 0 ? 0 : (fraction > 1 ? 1 : fraction);
+    oled.clear();
+    oled.setTextAlignment(TEXT_ALIGN_LEFT);
+    oled.setFont(ArialMT_Plain_16);
+    oled.drawString(0, ROW_MED_Y, "Cambiar modo");
+    oled.setFont(ArialMT_Plain_10);
+    oled.drawString(0, 20, "Siguiente:");
+    oled.drawString(0, 32, nextMode);
+    oled.drawProgressBar(0, 50, 127, 10, static_cast<uint8_t>(clamped * 100));
+    oled.display();
 }
